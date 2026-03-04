@@ -25,6 +25,8 @@ jobs:
         env:
           REDIS_HOST: ${{ secrets.REDIS_HOST }}
           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+          OPTIONS_REDIS_HOST: ${{ secrets.OPTIONS_REDIS_HOST }}
+          OPTIONS_REDIS_PASSWORD: ${{ secrets.OPTIONS_REDIS_PASSWORD }}
           NETLIFY_API_TOKEN: ${{ secrets.NETLIFY_API_TOKEN }}
           NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
           OPTIONS_SYMBOLS: "IWN,CRWD"
