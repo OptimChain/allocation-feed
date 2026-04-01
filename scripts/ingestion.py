@@ -31,7 +31,8 @@ Usage:
 
 from __future__ import annotations
 
-from dataclasses import replace
+import time
+from dataclasses import dataclass, field, replace
 from functools import reduce
 from typing import (
     Callable,
@@ -53,6 +54,26 @@ from options_accessor import (
 )
 
 T = TypeVar("T")
+
+# ── Pipeline metrics (inspired by Claude Code cost-tracker) ──
+# Lightweight, per-evaluate stats so callers can observe the pipeline
+# without coupling to a logging framework.
+
+
+@dataclass
+class PipelineMetrics:
+    """Snapshot of a single .evaluate() execution."""
+    source_count: int = 0          # records returned by thunk
+    result_count: int = 0          # records after all ops
+    ops_applied: int = 0           # number of operator stages
+    elapsed_ms: float = 0.0        # wall-clock time for evaluate()
+    compacted: bool = False        # True if auto-budget truncated
+
+    @property
+    def drop_rate(self) -> float:
+        """Fraction of source records filtered out."""
+        return 1 - (self.result_count / self.source_count) if self.source_count else 0.0
+
 
 # ── Operator types ────────────────────────────────────
 # Each operator is a lambda that transforms a list → list.
@@ -84,22 +105,28 @@ class RecordSet(Generic[T]):
         _ops     — tuple of Operator lambdas applied after the thunk
     """
 
-    __slots__ = ("_thunk", "_ops")
+    __slots__ = ("_thunk", "_ops", "_budget", "_last_metrics")
 
     def __init__(
         self,
         thunk: Callable[[], list[T]],
         ops: tuple[Operator, ...] = (),
+        budget: Optional[int] = None,
     ):
         self._thunk = thunk
         self._ops = ops
+        self._budget: Optional[int] = budget
+        self._last_metrics: Optional[PipelineMetrics] = None
 
     # ── Builders (each returns a NEW RecordSet) ───────
 
+    def _extend(self, op: Operator) -> RecordSet[T]:
+        """Internal: return a new RecordSet with one more operator, preserving budget."""
+        return RecordSet(self._thunk, self._ops + (op,), budget=self._budget)
+
     def filter(self, predicate: Callable[[T], bool]) -> RecordSet[T]:
         """Append a filter predicate — evaluated at runtime."""
-        op: Operator = lambda rs, p=predicate: [r for r in rs if p(r)]
-        return RecordSet(self._thunk, self._ops + (op,))
+        return self._extend(lambda rs, p=predicate: [r for r in rs if p(r)])
 
     def exclude(self, predicate: Callable[[T], bool]) -> RecordSet[T]:
         """Inverse filter — exclude records matching predicate."""
@@ -112,23 +139,29 @@ class RecordSet(Generic[T]):
         reverse: bool = False,
     ) -> RecordSet[T]:
         """Append a sort — evaluated at runtime."""
-        op: Operator = lambda rs, k=key, rev=reverse: sorted(rs, key=k, reverse=rev)
-        return RecordSet(self._thunk, self._ops + (op,))
+        return self._extend(lambda rs, k=key, rev=reverse: sorted(rs, key=k, reverse=rev))
 
     def map(self, transform: Callable[[T], T]) -> RecordSet[T]:
         """Apply a per-record transformation at runtime."""
-        op: Operator = lambda rs, t=transform: [t(r) for r in rs]
-        return RecordSet(self._thunk, self._ops + (op,))
+        return self._extend(lambda rs, t=transform: [t(r) for r in rs])
 
     def take(self, n: int) -> RecordSet[T]:
         """Limit to first n records (applied after preceding ops)."""
-        op: Operator = lambda rs, limit=n: rs[:limit]
-        return RecordSet(self._thunk, self._ops + (op,))
+        return self._extend(lambda rs, limit=n: rs[:limit])
 
     def drop(self, n: int) -> RecordSet[T]:
         """Skip first n records."""
-        op: Operator = lambda rs, skip=n: rs[skip:]
-        return RecordSet(self._thunk, self._ops + (op,))
+        return self._extend(lambda rs, skip=n: rs[skip:])
+
+    def compact(self, budget: int) -> RecordSet[T]:
+        """Set a record budget — auto-truncate after thunk if source exceeds it.
+
+        Inspired by Claude Code's context compaction: when the raw source
+        returns more records than `budget`, only the first `budget` are kept
+        before operators run.  Prevents large intermediate sets from blowing
+        up downstream sorts / joins.
+        """
+        return RecordSet(self._thunk, self._ops, budget=budget)
 
     def join(
         self,
@@ -187,8 +220,7 @@ class RecordSet(Generic[T]):
 
     def flat_map(self, fn: Callable[[T], Iterable[T]]) -> RecordSet[T]:
         """Map each record to zero-or-more records, then flatten."""
-        op: Operator = lambda rs, f=fn: [item for r in rs for item in f(r)]
-        return RecordSet(self._thunk, self._ops + (op,))
+        return self._extend(lambda rs, f=fn: [item for r in rs for item in f(r)])
 
     def group_by(self, key: Callable[[T], str]) -> Callable[[], dict[str, list[T]]]:
         """Return a thunk that evaluates and groups records by key.
@@ -212,9 +244,35 @@ class RecordSet(Generic[T]):
     # ── Terminal operations ───────────────────────────
 
     def evaluate(self) -> list[T]:
-        """Materialize: run the thunk, then apply all chained operators."""
+        """Materialize: run the thunk, apply compaction + all chained operators.
+
+        Records PipelineMetrics accessible via `.metrics` after evaluation.
+        """
+        t0 = time.monotonic()
         raw = self._thunk()
-        return _chain(*self._ops)(raw) if self._ops else raw
+        source_count = len(raw)
+        compacted = False
+
+        # Context compaction: if budget set and source exceeds it, truncate
+        if self._budget is not None and len(raw) > self._budget:
+            raw = raw[:self._budget]
+            compacted = True
+
+        result = _chain(*self._ops)(raw) if self._ops else raw
+
+        self._last_metrics = PipelineMetrics(
+            source_count=source_count,
+            result_count=len(result),
+            ops_applied=len(self._ops),
+            elapsed_ms=(time.monotonic() - t0) * 1000,
+            compacted=compacted,
+        )
+        return result
+
+    @property
+    def metrics(self) -> Optional[PipelineMetrics]:
+        """Metrics from the most recent .evaluate() call, or None."""
+        return self._last_metrics
 
     def first(self) -> Optional[T]:
         """Evaluate and return the first record, or None."""
@@ -239,7 +297,8 @@ class RecordSet(Generic[T]):
         return self.count() > 0
 
     def __repr__(self) -> str:
-        return f"RecordSet(ops={len(self._ops)})"
+        budget = f", budget={self._budget}" if self._budget else ""
+        return f"RecordSet(ops={len(self._ops)}{budget})"
 
 
 # ── Default merge for OptionsRecord ───────────────────
