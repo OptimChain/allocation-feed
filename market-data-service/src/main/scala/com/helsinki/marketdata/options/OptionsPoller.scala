@@ -16,6 +16,8 @@ class OptionsPoller(config: AppConfig):
     println(s"[options] Starting options poller")
     println(s"  underlyings: ${config.optionsSymbols.mkString(", ")}")
     println(s"  interval:    ${config.optionsPollIntervalMs}ms")
+    println(s"  data mode:   ${config.optionsDataModeLabel}")
+    println(s"  feed:        ${config.optionsMarketDataFeed}")
     println(s"  bars limit:  top $TopContractsForBars contracts per underlying")
 
     // Verify Redis
@@ -47,7 +49,7 @@ class OptionsPoller(config: AppConfig):
 
     val chain = client.fetchOptionChain(
       underlying = underlying,
-      feed = "indicative",
+      feed = config.optionsMarketDataFeed,
       expirationGte = Some(today.format(DateTimeFormatter.ISO_LOCAL_DATE)),
       expirationLte = Some(nearTermEnd),
       limit = 100

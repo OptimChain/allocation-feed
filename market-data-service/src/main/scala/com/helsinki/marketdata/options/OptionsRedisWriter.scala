@@ -39,7 +39,9 @@ class OptionsRedisWriter(config: AppConfig):
         "underlying"   -> Json.fromString(underlying),
         "updated_at"   -> Json.fromString(java.time.Instant.now.toString),
         "num_contracts" -> Json.fromInt(snapshots.size),
-        "contracts"    -> Json.fromValues(snapshots.map(s => Json.fromString(s.symbol)))
+        "contracts"    -> Json.fromValues(snapshots.map(s => Json.fromString(s.symbol))),
+        "feed"         -> Json.fromString(config.optionsMarketDataFeed),
+        "data_mode"    -> Json.fromString(config.optionsDataModeLabel)
       )
       pipe.hset(chainKey, "_meta", meta.noSpaces)
       pipe.expire(chainKey, 86400) // 24 hours
@@ -80,7 +82,10 @@ class OptionsRedisWriter(config: AppConfig):
         "underlying"    -> Json.fromString(underlying),
         "updated_at"    -> Json.fromString(java.time.Instant.now.toString),
         "num_contracts" -> Json.fromInt(barsMap.size),
-        "total_bars"    -> Json.fromInt(barsMap.values.map(_.size).sum)
+        "total_bars"    -> Json.fromInt(barsMap.values.map(_.size).sum),
+        "feed"          -> Json.fromString(config.optionsMarketDataFeed),
+        "data_mode"     -> Json.fromString(config.optionsDataModeLabel),
+        "bars_end"      -> Json.fromString(config.optionsBarsEnd.toString)
       )
       pipe.hset(barsKey, "_meta", meta.noSpaces)
       pipe.hset(BarsHashKey, underlying, meta.noSpaces)
