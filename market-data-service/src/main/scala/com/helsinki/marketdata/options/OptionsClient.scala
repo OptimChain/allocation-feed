@@ -4,8 +4,6 @@ import com.helsinki.marketdata.config.AppConfig
 import io.circe.parser.*
 import io.circe.*
 import sttp.client3.*
-import java.time.{Instant, LocalDate}
-import java.time.format.DateTimeFormatter
 
 class OptionsClient(config: AppConfig):
   private val backend = HttpClientSyncBackend()
@@ -57,47 +55,6 @@ class OptionsClient(config: AppConfig):
       case e: Exception =>
         println(s"[options] Chain exception for $underlying: ${e.getMessage}")
         Seq.empty
-
-  /** Fetch minute-level bars for specific option contract symbols. */
-  def fetchOptionBars(
-    contractSymbols: Seq[String],
-    timeframe: String = "1Min",
-    start: Option[String] = None,
-    end: Option[String] = None,
-    limit: Int = 1000
-  ): Map[String, Seq[OptionBar]] =
-    if contractSymbols.isEmpty then return Map.empty
-
-    try
-      // Alpaca limits to 100 symbols per request; batch if needed
-      val batches = contractSymbols.grouped(100).toSeq
-      val allBars = scala.collection.mutable.Map[String, Seq[OptionBar]]()
-
-      for batch <- batches do
-        val symbolsParam = batch.mkString(",")
-        val startParam = start.getOrElse(LocalDate.now().atStartOfDay().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME) + "Z")
-        val endParam = end.getOrElse(config.optionsBarsEnd.toString)
-        val feed = config.optionsMarketDataFeed
-
-        val response = basicRequest
-          .get(uri"$optionsBaseUrl/bars?symbols=$symbolsParam&timeframe=$timeframe&start=$startParam&end=$endParam&limit=$limit&sort=desc&feed=$feed")
-          .header("APCA-API-KEY-ID", config.alpacaApiKey)
-          .header("APCA-API-SECRET-KEY", config.alpacaSecretKey)
-          .send(backend)
-
-        response.body match
-          case Right(body) =>
-            val parsed = parseOptionBars(body)
-            for (sym, bars) <- parsed do
-              allBars(sym) = allBars.getOrElse(sym, Seq.empty) ++ bars
-          case Left(err) =>
-            println(s"[options] Bars error for batch: $err")
-
-      allBars.toMap
-    catch
-      case e: Exception =>
-        println(s"[options] Bars exception: ${e.getMessage}")
-        Map.empty
 
   /** Fetch latest snapshots for specific contract symbols. */
   def fetchOptionSnapshots(
@@ -180,34 +137,5 @@ class OptionsClient(config: AppConfig):
       .orElse(c.downField("greeks").downField("implied_volatility").as[Double].toOption)
 
     OptionSnapshot(contractSymbol, trade, quote, greeks, iv)
-
-  private def parseOptionBars(body: String): Map[String, Seq[OptionBar]] =
-    parse(body).toOption match
-      case Some(json) =>
-        val barsObj = json.hcursor.downField("bars")
-        barsObj.keys.getOrElse(Nil).toSeq.map { symbol =>
-          val barArray = barsObj.downField(symbol).focus
-            .flatMap(_.asArray)
-            .getOrElse(Vector.empty)
-
-          val bars = barArray.flatMap { barJson =>
-            val c = barJson.hcursor
-            for
-              t <- c.get[String]("t").toOption
-              o <- c.get[Double]("o").toOption
-              h <- c.get[Double]("h").toOption
-              l <- c.get[Double]("l").toOption
-              cl <- c.get[Double]("c").toOption
-              v <- c.get[Long]("v").toOption.orElse(c.get[Int]("v").toOption.map(_.toLong))
-            yield
-              val n = c.get[Int]("n").toOption.getOrElse(0)
-              val vw = c.get[Double]("vw").toOption.getOrElse(0.0)
-              OptionBar(t, o, h, l, cl, v, n, vw)
-          }
-          symbol -> bars.toSeq
-        }.toMap
-      case None =>
-        println(s"[options] Failed to parse bars JSON")
-        Map.empty
 
   def close(): Unit = backend.close()

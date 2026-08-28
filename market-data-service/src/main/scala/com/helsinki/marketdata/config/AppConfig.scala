@@ -37,11 +37,6 @@ case class AppConfig(
     else
       s"DELAYED (${optionsDelayMinutes}m indicative — no market-data subscription)"
 
-  /** Latest ``end`` timestamp allowed for options bars requests. */
-  def optionsBarsEnd: java.time.Instant =
-    if optionsRealtime then java.time.Instant.now()
-    else java.time.Instant.now().minusSeconds(optionsDelayMinutes.toLong * 60L)
-
 object AppConfig:
   def fromEnv(): AppConfig =
     val redisHostRaw = sys.env.getOrElse(

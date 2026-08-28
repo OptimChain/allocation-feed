@@ -8,7 +8,6 @@ import redis.clients.jedis.{JedisPool, JedisPoolConfig}
 
 class OptionsRedisWriter(config: AppConfig):
   private val ChainHashKey   = "options-chain"
-  private val BarsHashKey    = "options-bars"
   private val HistoryKey     = "options-chain:history"
 
   private val poolConfig = new JedisPoolConfig()
@@ -59,37 +58,6 @@ class OptionsRedisWriter(config: AppConfig):
       pipe.lpush(s"$HistoryKey:$underlying", historyEntry.noSpaces)
       pipe.ltrim(s"$HistoryKey:$underlying", 0, config.historyMaxSize - 1)
       pipe.expire(s"$HistoryKey:$underlying", 86400) // 24 hours
-
-      pipe.sync()
-    finally
-      jedis.close()
-
-  /** Write minute-level bars for option contracts to Redis. */
-  def writeBars(underlying: String, barsMap: Map[String, Seq[OptionBar]]): Unit =
-    if barsMap.isEmpty then return
-
-    val jedis = pool.getResource
-    try
-      val pipe = jedis.pipelined()
-      val barsKey = s"$BarsHashKey:$underlying"
-
-      for (contractSymbol, bars) <- barsMap do
-        val barsJson = Json.fromValues(bars.map(_.asJson))
-        pipe.hset(barsKey, contractSymbol, barsJson.noSpaces)
-
-      // Write bars metadata
-      val meta = Json.obj(
-        "underlying"    -> Json.fromString(underlying),
-        "updated_at"    -> Json.fromString(java.time.Instant.now.toString),
-        "num_contracts" -> Json.fromInt(barsMap.size),
-        "total_bars"    -> Json.fromInt(barsMap.values.map(_.size).sum),
-        "feed"          -> Json.fromString(config.optionsMarketDataFeed),
-        "data_mode"     -> Json.fromString(config.optionsDataModeLabel),
-        "bars_end"      -> Json.fromString(config.optionsBarsEnd.toString)
-      )
-      pipe.hset(barsKey, "_meta", meta.noSpaces)
-      pipe.hset(BarsHashKey, underlying, meta.noSpaces)
-      pipe.expire(barsKey, 86400) // 24 hours
 
       pipe.sync()
     finally

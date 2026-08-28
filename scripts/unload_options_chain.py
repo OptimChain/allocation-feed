@@ -17,7 +17,6 @@ Redis keys consumed (OptionsRecord format):
 Legacy keys also consumed (backward compat):
   options-chain:history:{SYMBOL}  (RPOP drain)
   options-chain:{SYMBOL}          (latest read)
-  options-bars:{SYMBOL}           (latest read)
 
 Env vars required:
   OPTIONS_REDIS_HOST (default: redis-14697.c52.us-east-1-4.ec2.cloud.redislabs.com:14697)
@@ -181,20 +180,8 @@ def get_latest_chain(client, symbol):
     return result
 
 
-def get_latest_bars(client, symbol):
-    """Read the current options-bars:{symbol} hash."""
-    raw = client.hgetall(f"options-bars:{symbol}")
-    result = {}
-    for key, value in raw.items():
-        try:
-            result[key] = json.loads(value)
-        except (json.JSONDecodeError, TypeError):
-            result[key] = value
-    return result
-
-
 def unload_legacy_symbol(client, token, site_id, symbol):
-    """Legacy: drain history and upload chain + bars for one underlying."""
+    """Legacy: drain history and upload chain for one underlying."""
     print(f"\n[unloader] Processing legacy format for {symbol}")
 
     history_key = f"options-chain:history:{symbol}"
@@ -205,11 +192,7 @@ def unload_legacy_symbol(client, token, site_id, symbol):
     num_contracts = len([k for k in latest_chain if k != "_meta"])
     print(f"  Latest chain: {num_contracts} contracts")
 
-    latest_bars = get_latest_bars(client, symbol)
-    num_bar_contracts = len([k for k in latest_bars if k != "_meta"])
-    print(f"  Latest bars: {num_bar_contracts} contracts with bars")
-
-    if not entries and not latest_chain and not latest_bars:
+    if not entries and not latest_chain:
         print(f"  No legacy data for {symbol}. Skipping.")
         return
 
@@ -221,13 +204,12 @@ def unload_legacy_symbol(client, token, site_id, symbol):
         "blob_key": blob_key,
         "format": "legacy",
         "latest_chain": latest_chain,
-        "latest_bars": latest_bars,
         "history_count": len(entries),
         "history": entries,
     }
 
     upload_to_blob(token, site_id, blob_key, payload)
-    print(f"  Done: {len(entries)} history + {num_contracts} chain + {num_bar_contracts} bars")
+    print(f"  Done: {len(entries)} history + {num_contracts} chain")
 
 
 # ── Main ──
