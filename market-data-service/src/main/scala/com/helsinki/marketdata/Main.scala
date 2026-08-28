@@ -22,6 +22,7 @@ import com.helsinki.marketdata.stream.OptionsStreamPoller
     thread.setDaemon(true)
     thread.start()
     println(s"[market-data] Options poller started for: ${config.optionsSymbols.mkString(", ")}")
+    println(s"[market-data] Options data mode: ${config.optionsDataModeLabel}")
     Some(op)
   else
     None

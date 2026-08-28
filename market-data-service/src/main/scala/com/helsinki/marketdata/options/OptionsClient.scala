@@ -76,10 +76,11 @@ class OptionsClient(config: AppConfig):
       for batch <- batches do
         val symbolsParam = batch.mkString(",")
         val startParam = start.getOrElse(LocalDate.now().atStartOfDay().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME) + "Z")
-        val endParam = end.getOrElse(Instant.now().toString)
+        val endParam = end.getOrElse(config.optionsBarsEnd.toString)
+        val feed = config.optionsMarketDataFeed
 
         val response = basicRequest
-          .get(uri"$optionsBaseUrl/bars?symbols=$symbolsParam&timeframe=$timeframe&start=$startParam&end=$endParam&limit=$limit&sort=desc")
+          .get(uri"$optionsBaseUrl/bars?symbols=$symbolsParam&timeframe=$timeframe&start=$startParam&end=$endParam&limit=$limit&sort=desc&feed=$feed")
           .header("APCA-API-KEY-ID", config.alpacaApiKey)
           .header("APCA-API-SECRET-KEY", config.alpacaSecretKey)
           .send(backend)
