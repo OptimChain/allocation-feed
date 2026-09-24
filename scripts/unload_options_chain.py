@@ -43,6 +43,10 @@ from scripts.options_accessor import RedisOptionsAccessor, OptionsRecord
 BLOBS_URL = "https://api.netlify.com/api/v1/blobs"
 STORE_NAME = "options-chain"
 BATCH_SIZE = 500
+# Netlify Blobs rejects oversized requests with 413. An 8.7MB IWN payload
+# uploads fine while a 16.3MB CRWD payload fails, so keep each blob comfortably
+# under the proven-good size and split larger snapshots across multiple blobs.
+MAX_BLOB_BYTES = 8_000_000
 
 
 def _make_redis(host_env, default_host, pass_env="REDIS_PASSWORD"):
@@ -96,6 +100,59 @@ def upload_to_blob(token, site_id, blob_key, data):
     resp = requests.put(url, headers=headers, data=payload, timeout=30)
     print(f"  [blob] Response: {resp.status_code} {resp.reason}")
     resp.raise_for_status()
+
+
+def upload_snapshot(token, site_id, symbol, now, base_fields, list_field, items):
+    """Upload a symbol snapshot as one or more blobs, each under MAX_BLOB_BYTES.
+
+    Splits the large ``list_field`` (history or contracts) across sequential
+    blobs so no single request exceeds Netlify's size limit. When everything
+    fits in one blob the payload is identical to the un-chunked format;
+    ``base_fields`` (e.g. latest_chain) ride only on the first part.
+
+    Args:
+        token: Netlify API token.
+        site_id: Netlify site id.
+        symbol: Underlying symbol, used as the blob key prefix.
+        now: Timestamp for the blob key and payload.
+        base_fields: Extra payload fields carried on the first part only.
+        list_field: Name of the list payload field (e.g. "history").
+        items: The list to split across blobs.
+    """
+    ts = now.strftime("%Y-%m-%dT%H-%M-%S")
+
+    # Greedily pack items into chunks by serialized byte size. base_fields ride
+    # on the first chunk, so charge their size to it.
+    base_bytes = len(json.dumps(base_fields)) if base_fields else 0
+    chunks: list[list] = []
+    current: list = []
+    current_bytes = base_bytes
+    for item in items:
+        item_bytes = len(json.dumps(item)) + 1
+        if current and current_bytes + item_bytes > MAX_BLOB_BYTES:
+            chunks.append(current)
+            current, current_bytes = [], 0
+        current.append(item)
+        current_bytes += item_bytes
+    chunks.append(current)  # always at least one blob, even if items is empty
+
+    total = len(chunks)
+    for i, chunk in enumerate(chunks):
+        suffix = "" if i == 0 else f"-p{i:02d}"
+        blob_key = f"{symbol}/{ts}{suffix}"
+        payload = {
+            "timestamp": now.isoformat(),
+            "underlying": symbol,
+            "blob_key": blob_key,
+        }
+        if i == 0:
+            payload.update(base_fields)
+        if total > 1:
+            payload["part"] = i
+            payload["part_count"] = total
+        payload[f"{list_field}_count"] = len(chunk)
+        payload[list_field] = chunk
+        upload_to_blob(token, site_id, blob_key, payload)
 
 
 def _record_to_dict(rec: OptionsRecord) -> dict:
@@ -197,18 +254,12 @@ def unload_legacy_symbol(client, token, site_id, symbol):
         return
 
     now = datetime.now(timezone.utc)
-    blob_key = f"{symbol}/{now.strftime('%Y-%m-%dT%H-%M-%S')}"
-    payload = {
-        "timestamp": now.isoformat(),
-        "underlying": symbol,
-        "blob_key": blob_key,
-        "format": "legacy",
-        "latest_chain": latest_chain,
-        "history_count": len(entries),
-        "history": entries,
-    }
-
-    upload_to_blob(token, site_id, blob_key, payload)
+    upload_snapshot(
+        token, site_id, symbol, now,
+        base_fields={"format": "legacy", "latest_chain": latest_chain},
+        list_field="history",
+        items=entries,
+    )
     print(f"  Done: {len(entries)} history + {num_contracts} chain")
 
 
